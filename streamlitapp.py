@@ -14,7 +14,6 @@ from rapidfuzz import fuzz, process
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from google import genai
-import os
 from pydantic import BaseModel
 
 from datetime import datetime, timedelta
