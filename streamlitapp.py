@@ -15,6 +15,7 @@ from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from google import genai
 from pydantic import BaseModel
+from stqdm import stqdm
 
 from datetime import datetime, timedelta
 
@@ -1010,186 +1011,184 @@ elif add_selectbox == 'Data Science Career Elevator':
         jobs = load_ds_jobs_data()
         jobs_filtered = jobs[jobs.technical_skills_cnt > 0]
         total_eligible_jobs = jobs_filtered.shape[0]
+
+        def find_bestfit_jobs(row):
+
+            jd_tech_skills_list = [str.lower(skill[1:len(skill)-1])  for skill in row['technical_skills'][1:len(row['technical_skills'])-1].split(', ')]
+            jd_soft_skills_list = [str.lower(skill[1:len(skill)-1])  for skill in row['soft_skills'][1:len(row['soft_skills'])-1].split(', ')]
+            skills_jd =  jd_tech_skills_list + jd_soft_skills_list
+
+            score = embedding_score(sentence_embedding_model, skills_resume, skills_jd)
+
+            suggested_key_words = suggest_missing_keywords(skills_resume, skills_jd, threshold=75)
+
+            suggested_key_words = [(key_word[0]) for key_word in suggested_key_words if key_word[-1] == '#afa']
+
+            return pd.Series([int(score), suggested_key_words])
         
-        with st.spinner(text=f"Matching your resume with {total_eligible_jobs} jobs in our database..."):
+        stqdm.pandas()
+        jobs_filtered[['Match Score','Matched Keywords']] = jobs_filtered.progress_apply(find_bestfit_jobs, axis=1)
 
-            def find_bestfit_jobs(row):
+        jobs_filtered = jobs_filtered[jobs_filtered['Match Score'] >= 70]
 
-                jd_tech_skills_list = [str.lower(skill[1:len(skill)-1])  for skill in row['technical_skills'][1:len(row['technical_skills'])-1].split(', ')]
-                jd_soft_skills_list = [str.lower(skill[1:len(skill)-1])  for skill in row['soft_skills'][1:len(row['soft_skills'])-1].split(', ')]
-                skills_jd =  jd_tech_skills_list + jd_soft_skills_list
+        jobs_filtered.rename(columns={'max_salary':'Max Salary', 'min_salary':'Min Salary'}, inplace=True)
 
-                score = embedding_score(sentence_embedding_model, skills_resume, skills_jd)
+        st.markdown('#### Found {} jobs aligned with your profile.'.format(jobs_filtered.shape[0]))
 
-                suggested_key_words = suggest_missing_keywords(skills_resume, skills_jd, threshold=75)
-
-                suggested_key_words = [(key_word[0]) for key_word in suggested_key_words if key_word[-1] == '#afa']
-
-                return pd.Series([int(score), suggested_key_words])
-
-
-            jobs_filtered[['Match Score','Matched Keywords']] = jobs_filtered.apply(find_bestfit_jobs, axis=1)
-
-            jobs_filtered = jobs_filtered[jobs_filtered['Match Score'] >= 70]
-
-            jobs_filtered.rename(columns={'max_salary':'Max Salary', 'min_salary':'Min Salary'}, inplace=True)
-
-            st.markdown('#### Found {} jobs aligned with your profile.'.format(jobs_filtered.shape[0]))
-
-            st.data_editor(
-                jobs_filtered[['Job Title', 'Company Name', 'Location', 'Industry', 'Min Salary', 'Max Salary', 'Match Score', 'Matched Keywords']].sort_values(by = 'Match Score', ascending=False),
-                column_config={
-                    "Matched Keywords": st.column_config.ListColumn(
-                    "Matched Keywords",
-                    help="Key words from your resume found in the job description",
-                    width="medium",
-                    ),
-                    "Match Score": st.column_config.ProgressColumn(
-                        "Match Score",
-                        help="Match score between your resume and job description",
-                        format=None,
-                        min_value=0,
-                        max_value=100,
-                    )
-                },
-                hide_index=True,
-            )
-
-            scatter = alt.Chart(jobs_filtered).mark_circle(size=60).encode(
-                x='Min Salary',
-                y='Max Salary',
-                color='Match Score',
-                tooltip=['Job Title', 'Company Name', 'Location', 'Match Score', 'Min Salary', 'Max Salary']
-            ).properties(
-                width='container',
-                height=400,
-                title='Min vs Max Salaries and Match Score'
-            ).interactive()
-
-            state_fips = get_state_fips()
-
-            state_agg = jobs_filtered.groupby(['State']).agg({'Min Salary':'min', 'Max Salary':'max', 'Job Title':'count'}).reset_index()
-            state_agg.rename(columns={'Job Title':'total_roles'}, inplace=True)
-            state_agg['id'] = state_agg['State'].map(state_fips)
-            state_agg.dropna(subset=['id'], inplace=True)
-            state_agg['id'] = state_agg['id'].astype(int)
-
-            city_agg = jobs_filtered.groupby(['State', 'City']).agg({'Min Salary':'min', 'Max Salary':'max', 'Job Title':'count'}).reset_index()
-            city_agg.rename(columns={'Job Title':'total_roles'}, inplace=True)
-            city_agg['id'] = city_agg['State'].map(state_fips)
-            city_agg.dropna(subset=['id'], inplace=True)
-            city_agg['id'] = city_agg['id'].astype(int)
-
-            us_states = alt.topo_feature(data.us_10m.url, 'states')
-
-            base = (
-                alt.Chart(us_states)
-                .mark_geoshape(fill='lightgray', stroke='white')
-            )
-
-            # fill based on total_roles, lookup from filtered state_agg
-            us_choropleth = alt.Chart(us_states).mark_geoshape().encode(
-                color=alt.condition(
-                    "datum.total_roles!=null",
-                    'total_roles:Q',
-                    alt.value('lightgray'),
-                    scale=alt.Scale(scheme='blues'),
-                    title='Total Roles'
+        st.data_editor(
+            jobs_filtered[['Job Title', 'Company Name', 'Location', 'Industry', 'Min Salary', 'Max Salary', 'Match Score', 'Matched Keywords']].sort_values(by = 'Match Score', ascending=False),
+            column_config={
+                "Matched Keywords": st.column_config.ListColumn(
+                "Matched Keywords",
+                help="Key words from your resume found in the job description",
+                width="medium",
                 ),
+                "Match Score": st.column_config.ProgressColumn(
+                    "Match Score",
+                    help="Match score between your resume and job description",
+                    format=None,
+                    min_value=0,
+                    max_value=100,
+                )
+            },
+            hide_index=True,
+        )
+
+        scatter = alt.Chart(jobs_filtered).mark_circle(size=60).encode(
+            x='Min Salary',
+            y='Max Salary',
+            color='Match Score',
+            tooltip=['Job Title', 'Company Name', 'Location', 'Match Score', 'Min Salary', 'Max Salary']
+        ).properties(
+            width='container',
+            height=400,
+            title='Min vs Max Salaries and Match Score'
+        ).interactive()
+
+        state_fips = get_state_fips()
+
+        state_agg = jobs_filtered.groupby(['State']).agg({'Min Salary':'min', 'Max Salary':'max', 'Job Title':'count'}).reset_index()
+        state_agg.rename(columns={'Job Title':'total_roles'}, inplace=True)
+        state_agg['id'] = state_agg['State'].map(state_fips)
+        state_agg.dropna(subset=['id'], inplace=True)
+        state_agg['id'] = state_agg['id'].astype(int)
+
+        city_agg = jobs_filtered.groupby(['State', 'City']).agg({'Min Salary':'min', 'Max Salary':'max', 'Job Title':'count'}).reset_index()
+        city_agg.rename(columns={'Job Title':'total_roles'}, inplace=True)
+        city_agg['id'] = city_agg['State'].map(state_fips)
+        city_agg.dropna(subset=['id'], inplace=True)
+        city_agg['id'] = city_agg['id'].astype(int)
+
+        us_states = alt.topo_feature(data.us_10m.url, 'states')
+
+        base = (
+            alt.Chart(us_states)
+            .mark_geoshape(fill='lightgray', stroke='white')
+        )
+
+        # fill based on total_roles, lookup from filtered state_agg
+        us_choropleth = alt.Chart(us_states).mark_geoshape().encode(
+            color=alt.condition(
+                "datum.total_roles!=null",
+                'total_roles:Q',
+                alt.value('lightgray'),
+                scale=alt.Scale(scheme='blues'),
+                title='Total Roles'
+            ),
+            tooltip=[
+                alt.Tooltip('State:N'),
+                alt.Tooltip('Min Salary:Q', title='Min Salary', format=','),
+                alt.Tooltip('Max Salary:Q', title='Max Salary', format=','),
+                alt.Tooltip('total_roles:Q', title='Total Roles')
+            ]
+        ).transform_lookup(
+            lookup='id',
+            from_=alt.LookupData(state_agg, 'id',
+                                ['State','Min Salary','Max Salary','total_roles'])
+        )
+
+        us_map = alt.layer(base, us_choropleth)
+        us_layer_chart = us_map.project('albersUsa').properties(
+                width='container', height=500,
+                title='Jobs by State: Salary & Role Count'
+        )
+
+        city = (
+            alt.Chart(city_agg)
+            .transform_window(
+                rank='rank(total_roles)',
+                sort=[alt.SortField('total_roles', order='descending')]
+            )
+            .transform_filter('datum.rank <= 20')
+            .mark_bar(size=14)
+            .encode(
+                y=alt.Y('City:N',
+                        sort=alt.EncodingSortField('total_roles', order='descending'),
+                        title='City',
+                        axis=alt.Axis(labelFontSize=12, labelOverlap=False, labelLimit=500)),
+                x=alt.X('Min Salary:Q', title='Min Salary'),
+                x2=alt.X2('Max Salary:Q', title='Max Salary'),
+                color=alt.Color('total_roles:Q',
+                                scale=alt.Scale(scheme='greens'),
+                                title='Total roles'),
                 tooltip=[
+                    alt.Tooltip('City:N'),
                     alt.Tooltip('State:N'),
+                    alt.Tooltip('total_roles:Q', title='Total Roles'),
                     alt.Tooltip('Min Salary:Q', title='Min Salary', format=','),
                     alt.Tooltip('Max Salary:Q', title='Max Salary', format=','),
-                    alt.Tooltip('total_roles:Q', title='Total Roles')
                 ]
-            ).transform_lookup(
-                lookup='id',
-                from_=alt.LookupData(state_agg, 'id',
-                                    ['State','Min Salary','Max Salary','total_roles'])
             )
-
-            us_map = alt.layer(base, us_choropleth)
-            us_layer_chart = us_map.project('albersUsa').properties(
-                    width='container', height=500,
-                    title='Jobs by State: Salary & Role Count'
+            .properties(
+                width='container',
+                height=600,
+                title='Top Cities: Salary Ranges'
             )
+        )
 
-            city = (
-                alt.Chart(city_agg)
-                .transform_window(
-                    rank='rank(total_roles)',
-                    sort=[alt.SortField('total_roles', order='descending')]
-                )
-                .transform_filter('datum.rank <= 20')
-                .mark_bar(size=14)
-                .encode(
-                    y=alt.Y('City:N',
-                            sort=alt.EncodingSortField('total_roles', order='descending'),
-                            title='City',
-                            axis=alt.Axis(labelFontSize=12, labelOverlap=False, labelLimit=500)),
-                    x=alt.X('Min Salary:Q', title='Min Salary'),
-                    x2=alt.X2('Max Salary:Q', title='Max Salary'),
-                    color=alt.Color('total_roles:Q',
-                                    scale=alt.Scale(scheme='greens'),
-                                    title='Total roles'),
-                    tooltip=[
-                        alt.Tooltip('City:N'),
-                        alt.Tooltip('State:N'),
-                        alt.Tooltip('total_roles:Q', title='Total Roles'),
-                        alt.Tooltip('Min Salary:Q', title='Min Salary', format=','),
-                        alt.Tooltip('Max Salary:Q', title='Max Salary', format=','),
-                    ]
-                )
-                .properties(
-                    width='container',
-                    height=600,
-                    title='Top Cities: Salary Ranges'
-                )
-            )
+        st.markdown("""
 
-            st.markdown("""
+        #### Best Match Jobs by Max Salary vs Min Salary
+                    
+        This scatter plot maps each role’s pay band—minimum salary on the x-axis and maximum on the y-axis—while color intensity reflects how closely it matches your profile. 
+        Use it to pinpoint where your best-fit opportunities lie, and to **spot high-pay roles with lower match scores which are missed opportunity for your career growth**.
 
-            #### Best Match Jobs by Max Salary vs Min Salary
-                        
-            This scatter plot maps each role’s pay band—minimum salary on the x-axis and maximum on the y-axis—while color intensity reflects how closely it matches your profile. 
-            Use it to pinpoint where your best-fit opportunities lie, and to spot high-pay roles with lower match scores so you know which skills to strengthen to reach them.
+        """)
 
-            """)
+        st.altair_chart(scatter, use_container_width=True)
 
-            st.altair_chart(scatter, use_container_width=True)
+        st.markdown("""
+                    
+        #### Best Match Jobs by State
 
-            st.markdown("""
-                        
-            #### Best Match Jobs by State
+        This interactive U.S. map highlights where your top-fit roles are located. 
+        * Color intensity shows the total number of matched jobs in each state (darker = more roles). 
+        * Hover over a state to see its exact role count and the range of minimum/maximum salaries.
+        Use this view to quickly pinpoint geographic hotspots for your best-fit opportunities.
 
-            This interactive U.S. map highlights where your top-fit roles are located. 
-            * Color intensity shows the total number of matched jobs in each state (darker = more roles). 
-            * Hover over a state to see its exact role count and the range of minimum/maximum salaries.
-            Use this view to quickly pinpoint geographic hotspots for your best-fit opportunities.
+        """)
 
-            """)
-
-            st.altair_chart(us_layer_chart, use_container_width=True)
+        st.altair_chart(us_layer_chart, use_container_width=True)
 
 
-            st.markdown("""
+        st.markdown("""
 
-            #### Best Match Jobs by Cities across the US
-                        
-            This floating-bar chart shows, for each of your top cities:
+        #### Best Match Jobs by Cities across the US
+                    
+        This floating-bar chart shows, for each of your top cities:
 
-            * Bar span from Min Salary → Max Salary, so you can compare compensation bands at a glance.
-            * Color intensity indicates the number of matched roles in that city (darker = more opportunities).
-            * Hover details reveal exact min/max figures and role counts.
+        * Bar span from Min Salary → Max Salary, so you can compare compensation bands at a glance.
+        * Color intensity indicates the number of matched roles in that city (darker = more opportunities).
+        * Hover details reveal exact min/max figures and role counts.
 
-            Use this view to spot which cities offer the best pay and the greatest volume of fits.
+        Use this view to spot which cities offer the best pay and the greatest volume of fits.
 
-            """)
+        """)
 
-            st.altair_chart(city, use_container_width=True)
+        st.altair_chart(city, use_container_width=True)
 
     else:
-        st.warning('NOTE: Please upload your resume to start the Career Elevator job recommendation engine.')
+        st.warning('NOTE: Please upload your resume to start the Career Elevator job recommendation engine. The recommendation engine is non deterministic as the process uses a LLM-based skill/key word extractor.')
         if not check_and_increment():
             st.error("🚫 Daily API quota reached. Try again tomorrow.")
         
